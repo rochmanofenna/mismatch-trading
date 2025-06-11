@@ -1,6 +1,6 @@
 # tests/test_stress.py
 import pytest
-from src.randomness.brownian_motion import brownian_motion_paths
+from backends.bicep.brownian_motion import brownian_motion_paths
 
 def test_large_paths():
     time, paths = brownian_motion_paths(T=1, n_steps=100, initial_value=0, n_paths=5000)

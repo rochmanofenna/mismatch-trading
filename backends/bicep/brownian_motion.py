@@ -6,7 +6,7 @@ import psutil
 import logging
 import os
 import time
-from src.randomness.stochastic_control import apply_stochastic_controls
+from backends.bicep.stochastic_control import apply_stochastic_controls
 
 # Setup logging
 logging.basicConfig(

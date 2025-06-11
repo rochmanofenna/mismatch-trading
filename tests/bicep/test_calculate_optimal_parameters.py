@@ -1,5 +1,5 @@
 # tests/test_calculate_optimal_parameters.py
-from src.randomness.brownian_motion import calculate_optimal_parameters
+from backends.bicep.brownian_motion import calculate_optimal_parameters
 
 def test_calculate_optimal_parameters_normal():
     resources = (8, 4, True, 16)  # 8GB RAM, 4 CPUs, GPU with 16GB memory

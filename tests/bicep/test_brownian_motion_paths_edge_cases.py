@@ -1,6 +1,6 @@
 # tests/test_brownian_motion_paths_edge_cases.py
 import pytest
-from src.randomness.brownian_motion import brownian_motion_paths
+from backends.bicep.brownian_motion import brownian_motion_paths
 
 def test_brownian_motion_paths_zero_time():
     with pytest.raises(ValueError):

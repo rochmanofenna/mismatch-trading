@@ -1,0 +1,43 @@
+201~200~#!/usr/bin/env bash
+# ------------------------------------------------------------
+# move_fa.sh — organise fusion_alpha into models / pipelines / routers
+# ------------------------------------------------------------
+set -euo pipefail
+
+# Ensure target sub-dirs exist
+mkdir -p fusion_alpha/{models,pipelines,routers}
+
+# ---------- models ----------
+mv fusion_alpha/fusionnet.py                     fusion_alpha/models/
+mv fusion_alpha/trading_model.py                 fusion_alpha/models/
+mv fusion_alpha/temporal_encoder.py              fusion_alpha/models/
+mv fusion_alpha/improved_fusion.py               fusion_alpha/models/
+mv fusion_alpha/finbert.py                       fusion_alpha/models/
+
+# ---------- pipelines (data prep + train/eval) ----------
+mv fusion_alpha/prepare_dataset.py               fusion_alpha/pipelines/
+mv fusion_alpha/train_fusion.py                  fusion_alpha/pipelines/
+mv fusion_alpha/train_with_kfold.py              fusion_alpha/pipelines/
+mv fusion_alpha/train_contradiction_model.py     fusion_alpha/pipelines/
+mv fusion_alpha/train_contradiction_heads.py     fusion_alpha/pipelines/
+mv fusion_alpha/tune_fusion.py                   fusion_alpha/pipelines/
+mv fusion_alpha/run_pipeline.py                  fusion_alpha/pipelines/
+mv fusion_alpha/walk_forward_validation.py       fusion_alpha/pipelines/
+mv fusion_alpha/evaluate_strategy.py             fusion_alpha/pipelines/
+mv fusion_alpha/benchmark_comparison.py          fusion_alpha/pipelines/
+mv fusion_alpha/contradiction_engine.py          fusion_alpha/pipelines/
+mv fusion_alpha/filter_all_contradictions.py     fusion_alpha/pipelines/
+mv fusion_alpha/filter_underhype_dataset.py      fusion_alpha/pipelines/
+mv fusion_alpha/predict_fusion.py                fusion_alpha/pipelines/
+mv fusion_alpha/graph.py                         fusion_alpha/pipelines/
+
+# ---------- routers (live / backtest / predict) ----------
+mv fusion_alpha/live_router.py                   fusion_alpha/routers/
+mv fusion_alpha/predict_router.py                fusion_alpha/routers/
+mv fusion_alpha/live_predict.py                  fusion_alpha/routers/
+mv fusion_alpha/live_trading.py                  fusion_alpha/routers/
+mv fusion_alpha/backtest_router.py               fusion_alpha/routers/
+mv fusion_alpha/option_screener.py               fusion_alpha/routers/
+mv fusion_alpha/options_utils.py                 fusion_alpha/routers/
+
+echo "Fusion Alpha files reorganised."

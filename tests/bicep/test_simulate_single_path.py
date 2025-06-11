@@ -1,7 +1,7 @@
 # tests/test_simulate_single_path.py
 import numpy as np
-from src.randomness.brownian_motion import simulate_single_path
-from src.randomness.stochastic_control import apply_stochastic_controls
+from backends.bicep.brownian_motion import simulate_single_path
+from backends.bicep.stochastic_control import apply_stochastic_controls
 
 def test_simulate_single_path_basic():
     path = simulate_single_path(1, 100, 0, 0.01, 0, None, np, apply_stochastic_controls)

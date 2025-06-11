@@ -1,7 +1,7 @@
 import networkx as nx
 import numpy as np
-from src.randomness.brownian_motion import simulate_single_path
-from src.randomness.stochastic_control import apply_stochastic_controls
+from backends.bicep.brownian_motion import simulate_single_path
+from backends.bicep.stochastic_control import apply_stochastic_controls
 import json
 import time
 from dask import delayed, compute

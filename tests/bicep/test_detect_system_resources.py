@@ -1,5 +1,5 @@
 # tests/test_detect_system_resources.py
-from src.randomness.brownian_motion import detect_system_resources
+from backends.bicep.brownian_motion import detect_system_resources
 
 def test_detect_system_resources():
     memory, cpu_count, gpu_available, gpu_memory = detect_system_resources()
