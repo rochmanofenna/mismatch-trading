@@ -1,0 +1,5 @@
+*.pth
+*.db
+__pycache__/
+results/
+
