@@ -3,3 +3,8 @@
 __pycache__/
 results/
 
+-e artifacts/
+__pycache__/
+*.pth
+*.db
+
