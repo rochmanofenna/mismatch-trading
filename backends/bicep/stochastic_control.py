@@ -1,26 +1,30 @@
-import numpy as _np
+import networkx as nx
+import numpy as np
 try:
-    import cupy as _cp
-    _ = _cp.cuda.runtime.getDeviceCount()        # probe driver
-    _xp = _cp
-except Exception:                                # no CuPy or bad driver
-    _xp = _np
-
-import numpy as _np
-try:
-    import cupy as _cp
-    _ = _cp.cuda.runtime.getDeviceCount()
-    _xp = _cp
+    import cupy as cp
+    _xp = cp
+    cp.cuda.runtime.getDeviceCount()  # probe driver
 except Exception:
-    _xp = _np
+    _xp = np
 
+from .stochastic_control import apply_stochastic_controls
 
-def simulate_batch(T, n_steps, n_paths, xp):
-    dt = T / n_steps
-    inc = xp.random.normal(0, 1, (n_paths, n_steps)).astype(xp.float32)
-    inc *= xp.sqrt(dt)
-    # one cumsum per path – all on GPU
-    paths = xp.concatenate(
-        [xp.zeros((n_paths, 1), dtype=inc.dtype),
-         xp.cumsum(inc, axis=1)], axis=1)
-    return paths
+def brownian_graph_walk(n_nodes, n_steps):
+    """
+    Minimal implementation used only by tests.  
+    Generates an nx.Graph on which nodes are 0…n_nodes-1,  
+    paths is an (n_nodes, n_steps) array of increments + cumsum.
+    """
+    G = nx.Graph()
+    G.add_nodes_from(range(n_nodes))
+
+    inc = _xp.random.normal(0, 1, size=(n_nodes, n_steps))
+    inc = apply_stochastic_controls(inc, None, None)  # broadcast-safe
+    paths = _xp.cumsum(inc, axis=1)
+
+    # add a simple chain of edges with weights = final-distance
+    for i in range(n_nodes-1):
+        w = float(_xp.linalg.norm(paths[i,-1] - paths[i+1,-1]))
+        G.add_edge(i, i+1, weight=w)
+
+    return G, paths

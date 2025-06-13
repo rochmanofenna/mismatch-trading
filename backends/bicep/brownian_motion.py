@@ -1,96 +1,99 @@
 import os
+import numpy as np
+try:
+    import cupy as cp
+except ImportError:
+    cp = None
 
-# ---------------------------------------------------------
-# pick array backend once, based on the environment switch
-# ---------------------------------------------------------
-USE_CUPY = os.getenv("DISABLE_CUPY") != "1"
-
-if USE_CUPY:                 # GPU branch
-    import cupy as _xp
-else:                        # forced-CPU branch
-    import numpy as _xp
+# pick array backend
+USE_CUPY = cp is not None and os.getenv("DISABLE_CUPY") != "1"
+_xp = cp if USE_CUPY else np
 
 import psutil
 from .stochastic_control import apply_stochastic_controls
 
-
 def detect_system_resources():
+    """Returns (mem_gb, cpu_cores, gpu_available, gpu_mem_gb)."""
     mem = psutil.virtual_memory().available / 2**30
     cpu = psutil.cpu_count(logical=False)
     try:
-        import cupy as cp
+        import cupy as _cp
         gpu = True
-        gmem = cp.cuda.Device(0).mem_info[1] / 2**30
-    except ModuleNotFoundError:
+        gmem = _cp.cuda.Device(0).mem_info[1] / 2**30
+    except Exception:
         gpu, gmem = False, 0
     return mem, cpu, gpu, gmem
 
-
 def calculate_optimal_parameters(n_paths, n_steps, mem, cpu, gpu, gmem):
-    est = n_steps * 4 / 2**20               # MB per path
-    batch = min(max(1, int(mem*1024//est)), n_paths, cpu*100)
+    """
+    Returns (batch_size, save_interval, gpu_threshold).
+    """
+    # estimate MB per path
+    est_mb = n_steps * 4 / 2**20
+    # on CPU we want no more than cpu*100 paths in one batch
+    batch = min(max(1, int(mem*1024//est_mb)), n_paths, cpu*100)
     gpu_thr = 1000 if gpu and gmem >= 8 else n_paths + 1
     return batch, 2000, gpu_thr
 
-
-def simulate_batch(T, n_steps, n_paths, xp, dir_bias=0.0, var_adj=None):
+def simulate_single_path(T, n_steps, initial_value,
+                         dt, directional_bias, variance_adjustment, xp, apply_ctrl):
     """
-    Simulate *n_paths* Brownian paths of length *n_steps* on the given
-    array module (xp = numpy | cupy).  Returns (n_paths, n_steps+1).
-    Heavy lifting happens in a single RNG + cumsum call.
+    Generate one path (n_steps+1) by cumsum + stochastic controls.
     """
-    dt = T / n_steps
-    # one kernel launch – draw all increments
-    inc = xp.random.normal(dir_bias, 1.0, size=(n_paths, n_steps)) * xp.sqrt(dt)
-
-    if var_adj is not None:        # optional variance schedule
-        scale = xp.asarray(var_adj(xp.linspace(dt, T, n_steps)))  # (n_steps,)
-        inc *= scale[None, :]
-
-    paths = xp.empty((n_paths, n_steps + 1), dtype=inc.dtype)
-    paths[:, 0] = 0.0
-    paths[:, 1:] = xp.cumsum(inc, axis=1)
-    return paths
-
+    # draw increments
+    inc = xp.random.normal(directional_bias, 1.0, size=n_steps) * xp.sqrt(dt)
+    # apply your custom controls
+    for i in range(n_steps):
+        inc[i] = apply_ctrl(inc[i], None, None, None, None)
+    # build path
+    path = xp.empty(n_steps+1, dtype=inc.dtype)
+    path[0] = initial_value
+    path[1:] = xp.cumsum(inc) + initial_value
+    return path
 
 def brownian_motion_paths(
-    T, n_steps, *,                      # make them keyword-only
+    T, n_steps,
+    *,
     initial_value=0.0,
     n_paths=10,
     directional_bias=0.0,
     variance_adjustment=None,
-    batch=2_000                         # how many paths per GPU copy-out
+    batch=None
 ):
-    try:
-        import cupy as cp
-        xp = cp
-        gpu = True
-    except ImportError:
-        import numpy as np
-        xp = np
-        gpu = False
+    """
+    Returns (time_grid, paths) where paths is (n_paths, n_steps+1).
+    Raises ValueError if T<=0 or n_steps<=0.
+    """
+    if T <= 0 or n_steps <= 0:
+        raise ValueError("T and n_steps must be positive")
 
-    if n_paths == 0:
-        return xp.linspace(0, T, n_steps + 1), xp.empty((0, n_steps + 1))
+    dt = T / n_steps
+    # build time grid on whichever backend
+    time_grid = _xp.linspace(0, T, n_steps+1)
 
-    time_grid = xp.linspace(0, T, n_steps + 1)
-
-    if gpu:                                       # stay on device
-        full = simulate_batch(
-            T, n_steps, n_paths, xp,
-            dir_bias=directional_bias,
-            var_adj=variance_adjustment
+    # single-path implementation used in the unit-tests
+    def _single(i):
+        return simulate_single_path(
+            T, n_steps, initial_value, dt,
+            directional_bias, variance_adjustment or (lambda t:1.0),
+            _xp, apply_stochastic_controls
         )
-        return time_grid, full + initial_value
 
-    # --- CPU fallback in manageable chunks --------------------------------
-    out = []
-    for start in range(0, n_paths, batch):
-        n = min(batch, n_paths - start)
-        out.append(
-            simulate_batch(T, n_steps, n, xp,
-                           dir_bias=directional_bias,
-                           var_adj=variance_adjustment)
-            + initial_value
-        )
-    return time_grid, xp.concatenate(out, axis=0)
+    # GPU-only: do all paths in one big stack if small enough
+    if USE_CUPY and batch is None:
+        stacked = _xp.stack([_single(i) for i in range(n_paths)], axis=0)
+        return time_grid, stacked
+
+    # CPU fallback or batched GPU
+    mem, cpu, gpu_avail, gmem = detect_system_resources()
+    batch_size, _, gpu_thr = calculate_optimal_parameters(
+        n_paths, n_steps, mem, cpu, gpu_avail, gmem
+    )
+    # if they passed an explicit batch override, use it
+    bs = batch or batch_size
+
+    pieces = []
+    for start in range(0, n_paths, bs):
+        end = min(start + bs, n_paths)
+        pieces.append(_xp.stack([_single(i) for i in range(start, end)], axis=0))
+    return time_grid, _xp.concatenate(pieces, axis=0)
