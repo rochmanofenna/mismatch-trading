@@ -1,24 +1,79 @@
-import numpy as _np
-try:
-    import cupy as _cp
-    _ = _cp.cuda.runtime.getDeviceCount()        # probe driver
-    _xp = _cp
-except Exception:                                # no CuPy or bad driver
-    _xp = _np
+# ── stochastic_control.py ─────────────────────────────────────────────
+import numpy as np
+import logging
+from functools import lru_cache
 
-import numpy as _np
-try:
-    import cupy as _cp
-    _ = _cp.cuda.runtime.getDeviceCount()
-    _xp = _cp
-except Exception:
-    _xp = _np
+# ---------------------------------------------------------------------
+#  logging
+# ---------------------------------------------------------------------
+logging.basicConfig(
+    filename="results/logs/stochastic_control.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
+# ---------------------------------------------------------------------
+#  hyper-parameters
+# ---------------------------------------------------------------------
+HIGH_THRESHOLD = 10
+LOW_THRESHOLD = 2
+DECAY_RATE = 0.1
+FEEDBACK_WARNING_THRESHOLD = 0.9
+ADAPTIVE_ADJUSTMENT = 0.05
+MAX_HIGH_THRESHOLD = 100
+DIAGNOSTIC_LOGGING = True
+
+
+def _log(msg):
+    if DIAGNOSTIC_LOGGING:
+        logging.info(msg)
+
+
+# ---------------------------------------------------------------------
+#  stochastic controls
+# ---------------------------------------------------------------------
+def adjust_variance(base_var, factor=1.0):
+    new = base_var * factor
+    _log(f"variance {base_var}→{new} (×{factor})")
+    return new
+
+
+@lru_cache(maxsize=128)
+def adaptive_randomness_control(x, feedback, rng=(0.2, 1.0)):
+    if feedback >= FEEDBACK_WARNING_THRESHOLD:
+        logging.warning("feedback %.3f ≥ %.2f", feedback, FEEDBACK_WARNING_THRESHOLD)
+    scale = np.clip(0.5 + 0.5 * feedback, *rng)
+    return x * scale
+
+
+def control_randomness_by_state(cnt, total):
+    if total <= 0:
+        raise ValueError("total_steps must be > 0")
+    norm = cnt / total
+
+    global HIGH_THRESHOLD
+    if norm > 0.8 * HIGH_THRESHOLD and HIGH_THRESHOLD < MAX_HIGH_THRESHOLD:
+        HIGH_THRESHOLD = min(MAX_HIGH_THRESHOLD, HIGH_THRESHOLD + ADAPTIVE_ADJUSTMENT)
+
+    if norm < LOW_THRESHOLD:
+        return 1.5
+    if norm > HIGH_THRESHOLD:
+        return 0.5
+    return 1.0
+
+
+def combined_variance_control(cnt, total, t, base_var=1.0):
+    return (
+        base_var
+        * control_randomness_by_state(cnt, total)
+        * np.exp(-DECAY_RATE * t)
+    )
 
 
 def apply_stochastic_controls(x):
-    if _xp.isscalar(x):
-        return x * 0.5 if abs(x) > 4 else x * 2.0 if abs(x) < 0.1 else x
-    arr = _xp.asarray(x)
-    arr[_xp.abs(arr) > 4] *= 0.5
-    arr[_xp.abs(arr) < 0.1] *= 2.0
-    return arr
+    """Light-weight control used in unit-tests."""
+    if np.abs(x) > 4:
+        x *= 0.5
+    elif np.abs(x) < 0.1:
+        x *= 2.0
+    return x
