@@ -1,119 +1,96 @@
-# ── brownian_motion.py ────────────────────────────────────────────────
-import numpy as np
-import matplotlib.pyplot as plt
-from dask import delayed, compute
-from dask.distributed import Client, LocalCluster
-import psutil, logging, os, time
+import os
 
-from backends.bicep.stochastic_control import apply_stochastic_controls
+# ---------------------------------------------------------
+# pick array backend once, based on the environment switch
+# ---------------------------------------------------------
+USE_CUPY = os.getenv("DISABLE_CUPY") != "1"
 
-# ---------------------------------------------------------------------
-#  resource helpers
-# ---------------------------------------------------------------------
+if USE_CUPY:                 # GPU branch
+    import cupy as _xp
+else:                        # forced-CPU branch
+    import numpy as _xp
+
+import psutil
+from .stochastic_control import apply_stochastic_controls
+
+
 def detect_system_resources():
     mem = psutil.virtual_memory().available / 2**30
     cpu = psutil.cpu_count(logical=False)
     try:
         import cupy as cp
-        gpu, gmem = True, cp.cuda.Device(0).mem_info[1] / 2**30
+        gpu = True
+        gmem = cp.cuda.Device(0).mem_info[1] / 2**30
     except ModuleNotFoundError:
-        gpu, gmem = False, 0.0
+        gpu, gmem = False, 0
     return mem, cpu, gpu, gmem
 
 
-def calculate_optimal_parameters(n, m, mem, cpu, gpu, gmem):
-    est = m * 4 / 2**20
-    bs = min(int(mem * 1024 // est), n, cpu * 100)
-    gthr = 1000 if gpu and gmem >= 8 else n + 1
-    return bs or 1, 2000, gthr
+def calculate_optimal_parameters(n_paths, n_steps, mem, cpu, gpu, gmem):
+    est = n_steps * 4 / 2**20               # MB per path
+    batch = min(max(1, int(mem*1024//est)), n_paths, cpu*100)
+    gpu_thr = 1000 if gpu and gmem >= 8 else n_paths + 1
+    return batch, 2000, gpu_thr
 
 
-def setup_dask_cluster(n, thresh=5000):
-    if n < thresh:
-        return None
-    c = Client(LocalCluster(n_workers=2, threads_per_worker=2, memory_limit="2GB"))
-    return c
+def simulate_batch(T, n_steps, n_paths, xp, dir_bias=0.0, var_adj=None):
+    """
+    Simulate *n_paths* Brownian paths of length *n_steps* on the given
+    array module (xp = numpy | cupy).  Returns (n_paths, n_steps+1).
+    Heavy lifting happens in a single RNG + cumsum call.
+    """
+    dt = T / n_steps
+    # one kernel launch – draw all increments
+    inc = xp.random.normal(dir_bias, 1.0, size=(n_paths, n_steps)) * xp.sqrt(dt)
+
+    if var_adj is not None:        # optional variance schedule
+        scale = xp.asarray(var_adj(xp.linspace(dt, T, n_steps)))  # (n_steps,)
+        inc *= scale[None, :]
+
+    paths = xp.empty((n_paths, n_steps + 1), dtype=inc.dtype)
+    paths[:, 0] = 0.0
+    paths[:, 1:] = xp.cumsum(inc, axis=1)
+    return paths
 
 
-# ---------------------------------------------------------------------
-#  Brownian helpers
-# ---------------------------------------------------------------------
-def simulate_single_path(
-    T,
-    n_steps,
-    x0,
-    dt,
-    directional_bias=0.0,
-    variance_adjustment=None,
-    xp=np,
-    apply_controls=apply_stochastic_controls,
-):
-    inc = xp.random.normal(directional_bias, 1.0, n_steps) * xp.sqrt(dt)
-    if variance_adjustment is not None:
-        inc *= xp.sqrt(variance_adjustment(xp.linspace(0, T, n_steps)))
-    for i in range(n_steps):
-        inc[i] = apply_controls(inc[i])
-    return xp.concatenate(([x0], x0 + xp.cumsum(inc)))
-
-
-# ---------------------------------------------------------------------
-#  public API
-# ---------------------------------------------------------------------
 def brownian_motion_paths(
-    T=1,
-    n_steps=100,
+    T, n_steps, *,                      # make them keyword-only
     initial_value=0.0,
     n_paths=10,
     directional_bias=0.0,
     variance_adjustment=None,
+    batch=2_000                         # how many paths per GPU copy-out
 ):
-    if T <= 0 or n_steps <= 0 or n_paths < 0:
-        raise ValueError("Invalid arguments")
+    try:
+        import cupy as cp
+        xp = cp
+        gpu = True
+    except ImportError:
+        import numpy as np
+        xp = np
+        gpu = False
 
-    mem, cpu, gpu, gmem = detect_system_resources()
-    bs, save_int, gthr = calculate_optimal_parameters(n_paths, n_steps, mem, cpu, gpu, gmem)
-    client = setup_dask_cluster(n_paths)
+    if n_paths == 0:
+        return xp.linspace(0, T, n_steps + 1), xp.empty((0, n_steps + 1))
 
-    xp = np
-    if gpu and n_paths >= gthr:
-        try:
-            import cupy as cp
+    time_grid = xp.linspace(0, T, n_steps + 1)
 
-            xp = cp
-        except ModuleNotFoundError:
-            pass
+    if gpu:                                       # stay on device
+        full = simulate_batch(
+            T, n_steps, n_paths, xp,
+            dir_bias=directional_bias,
+            var_adj=variance_adjustment
+        )
+        return time_grid, full + initial_value
 
-    paths = []
-    dt = T / n_steps
-    for start in range(0, n_paths, bs):
-        end = min(start + bs, n_paths)
-        batch = [
-            delayed(simulate_single_path)(
-                T,
-                n_steps,
-                initial_value,
-                dt,
-                directional_bias,
-                variance_adjustment,
-                xp,
-                apply_stochastic_controls,
-            )
-            for _ in range(start, end)
-        ]
-        paths.extend(compute(*batch))
-    if client:
-        client.close()
-    return xp.linspace(0, T, n_steps + 1), xp.asarray(paths)
-
-
-# ---------------------------------------------------------------------
-#  demo when run directly
-# ---------------------------------------------------------------------
-if __name__ == "__main__":
-    time_grid, paths = brownian_motion_paths(T=1, n_steps=100, n_paths=10)
-    for p in paths[:10]:
-        plt.plot(time_grid, p)
-    plt.title("Brownian Motion Paths")
-    plt.xlabel("t")
-    plt.ylabel("W(t)")
-    plt.show()
+    # --- CPU fallback in manageable chunks --------------------------------
+    out = []
+    for start in range(0, n_paths, batch):
+        n = min(batch, n_paths - start)
+        out.append(
+            simulate_batch(T, n_steps, n, xp,
+                           dir_bias=directional_bias,
+                           var_adj=variance_adjustment)
+            + initial_value
+        )
+    return time_grid, xp.concatenate(out, axis=0)
