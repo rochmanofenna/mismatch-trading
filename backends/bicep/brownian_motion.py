@@ -1,4 +1,15 @@
 import os
+import numpy as np
+try:
+    import cupy as cp
+except ImportError:
+    cp = None
+
+# pick the array backend once
+USE_CUPY = cp is not None and os.getenv("DISABLE_CUPY") != "1"
+_xp = cp if USE_CUPY else np
+
+import os
 import time
 import numpy as _np
 import psutil
