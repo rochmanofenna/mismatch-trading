@@ -1,4 +1,5 @@
 #include <torch/extension.h>
+#include <curand_kernel.h>
 
 void sde_curand_launch(
     torch::Tensor paths,

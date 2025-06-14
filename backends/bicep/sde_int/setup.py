@@ -1,15 +1,20 @@
-from torch.utils.cpp_extension import load
+# backends/bicep/sde_int/setup.py
+from setuptools import setup
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+import os
 
-sde_ext = load(
-    name="sde_ext",
-    sources=["curand_kernel.cu", "binding.cpp"],
-    extra_cuda_cflags=["-O3"],
-)
+cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
 
-paths = torch.zeros((n_paths, stride), device="cuda", dtype=torch.float32)
-sde_ext.sde_curand(
-    paths, n_steps, stride,
-    1.0, feedback_value, decay_rate,
-    high_threshold, low_threshold,
-    float(n_steps), base_variance
+setup(
+    name="sde_int",
+    ext_modules=[
+        CUDAExtension(
+            name="sde_int",
+            sources=["curand_kernel.cu", "binding.cpp"],
+            include_dirs=[os.path.join(cuda_home, "include")],
+            libraries=["curand"],
+            extra_compile_args={"nvcc": ["-O3"]},
+        )
+    ],
+    cmdclass={"build_ext": BuildExtension},
 )
