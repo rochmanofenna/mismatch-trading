@@ -14,6 +14,7 @@ import time
 import numpy as _np
 import psutil
 import logging
+import numpy as np, cupy as cp
 
 from dask import delayed, compute
 from dask.distributed import Client, LocalCluster
@@ -62,14 +63,16 @@ def setup_dask_cluster():
 
 def simulate_batch(T, n_steps, n_paths, xp, dir_bias=0.0, var_adj=None):
     dt = T / n_steps
-    inc = xp.random.normal(dir_bias, 1.0, (n_paths, n_steps)) * xp.sqrt(dt)
+    # shape (n_paths, n_steps)
+    inc = xp.random.normal(dir_bias, 1.0, size=(n_paths, n_steps)) * xp.sqrt(dt)
     if var_adj is not None:
+        # shape (n_steps,)
         scale = xp.asarray(var_adj(xp.linspace(dt, T, n_steps)))
         inc *= scale[None, :]
-    paths = xp.empty((n_paths, n_steps+1), dtype=inc.dtype)
-    paths[:, 0] = 0.0
-    paths[:, 1:] = xp.cumsum(inc, axis=1)
-    return paths
+    out = xp.empty((n_paths, n_steps+1), dtype=inc.dtype)
+    out[:, 0] = 0.0
+    out[:, 1:] = xp.cumsum(inc, axis=1)
+    return out
 
 def simulate_single_path(T, n_steps, initial_value, dt,
                          directional_bias, variance_adjustment,
@@ -111,7 +114,6 @@ def brownian_motion_paths(
         but still use a single cumsum per chunk
       – on CPU (NumPy) same pattern
     """
-
     if T <= 0:
         raise ValueError("Time duration T must be greater than 0.")
     if n_steps <= 0:
@@ -141,3 +143,55 @@ def brownian_motion_paths(
     # stitch back together & shift by initial_value
     paths = xp.concatenate(pieces, axis=0) + initial_value
     return tg, paths
+
+def brownian_motion_paths_gpu_stream(
+    T: float,
+    n_steps: int,
+    n_paths: int,
+    batch: int = 1024,
+    initial_value: float = 0.0,
+    directional_bias: float = 0.0,
+    variance_adjustment=None,
+):
+    """
+    Simulate in batch‐sized chunks on the GPU, copy each chunk back into
+    a host‐side NumPy memmap, and never try to concatenate one giant CuPy array.
+    """
+    if cp is None:
+        raise RuntimeError("Cupy not available")
+    # 1) build a GPU time‐grid & then copy to host
+    tg_gpu = cp.linspace(0, T, n_steps+1)
+    tg = tg_gpu.get()  # now a NumPy array on host
+
+    # 2) prepare a host‐side memmap to hold every path
+    fname = "brownian_paths.dat"
+    host_paths = np.memmap(
+        fname, mode="w+",
+        dtype="float32",
+        shape=(n_paths, n_steps+1)
+    )
+
+    pool = cp.get_default_memory_pool()
+
+    # 3) stream chunk by chunk
+    for start in range(0, n_paths, batch):
+        size = min(batch, n_paths - start)
+        # simulate a full batch on GPU
+        chunk_gpu = simulate_batch(
+            T, n_steps, size,
+            xp=cp,
+            dir_bias=directional_bias,
+            var_adj=variance_adjustment
+        )
+        # shift by initial_value
+        chunk_gpu += initial_value
+
+        # copy it back
+        host_paths[start:start+size] = chunk_gpu.get()
+
+        # free as much GPU memory as possible
+        pool.free_all_blocks()
+
+    # 4) return the host copies
+    return tg, host_paths
+
