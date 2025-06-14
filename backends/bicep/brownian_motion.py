@@ -33,6 +33,8 @@ def detect_system_resources():
     logging.info(f"Resources: mem={mem:.2f}GB cpu={cpu} gpu={gpu} gmem={gmem:.2f}GB")
     return mem, cpu, gpu, gmem
 
+
+
 def calculate_optimal_parameters(n_paths, n_steps, mem, cpu, gpu, gmem):
     est_mb = n_steps * 4 / 2**20
     batch = min(max(1, int(mem*1024//est_mb)), n_paths, cpu*100)
@@ -46,6 +48,17 @@ def setup_dask_cluster():
     client = Client(cluster)
     logging.info("Dask cluster started")
     return client
+
+def simulate_batch(T, n_steps, n_paths, xp, dir_bias=0.0, var_adj=None):
+    dt = T / n_steps
+    inc = xp.random.normal(dir_bias, 1.0, (n_paths, n_steps)) * xp.sqrt(dt)
+    if var_adj is not None:
+        scale = xp.asarray(var_adj(xp.linspace(dt, T, n_steps)))
+        inc *= scale[None, :]
+    paths = xp.empty((n_paths, n_steps+1), dtype=inc.dtype)
+    paths[:, 0] = 0.0
+    paths[:, 1:] = xp.cumsum(inc, axis=1)
+    return paths
 
 def simulate_single_path(T, n_steps, initial_value, dt,
                          directional_bias, variance_adjustment,
@@ -72,61 +85,43 @@ def simulate_single_path(T, n_steps, initial_value, dt,
     return path
 
 def brownian_motion_paths(
-    T=1.0,
-    n_steps=100,
+    T,
+    n_steps,
+    *,
     initial_value=0.0,
     n_paths=10,
     directional_bias=0.0,
-    variance_adjustment=None
+    variance_adjustment=None,
+    batch=2000,        # paths per chunk
 ):
-    # -- validate --
-    if T<=0 or n_steps<=0:
-        raise ValueError("T and n_steps must be > 0")
-    if n_paths<0:
-        raise ValueError("n_paths must be >= 0")
-    if n_paths==0:
-        return _np.linspace(0, T, n_steps+1), _np.empty((0, n_steps+1))
-
-    mem, cpu, gpu, gmem = detect_system_resources()
-    batch, save_int, gpu_thr = calculate_optimal_parameters(n_paths, n_steps, mem, cpu, gpu, gmem)
-    client = setup_dask_cluster()
-
-    try:
-        if n_paths >= gpu_thr:
-            import cupy as cp
-            xp = cp; use_gpu = True
-        else:
-            xp = _np; use_gpu = False
-    except ImportError:
-        xp = _np; use_gpu = False
-
+    """
+    Vectorized CPU/GPU implementation:
+      – on GPU (CuPy) it will slice into chunks of size `batch`
+        but still use a single cumsum per chunk
+      – on CPU (NumPy) same pattern
+    """
+    xp = _xp
     dt = T / n_steps
-    tg = xp.linspace(0, T, n_steps+1)
-    if use_gpu:
-        tg = tg.get()
 
-    # memmap to avoid OOM
-    fname = f"brownian_paths_{int(time.time()*1e3)}.dat"
-    paths = _np.memmap(fname, dtype="float32", mode="w+",
-                       shape=(n_paths, n_steps+1))
-    logging.info(f"Writing memmap → {fname}")
+    # time‐grid
+    tg = xp.linspace(0, T, n_steps + 1)
 
-    for i in range(0, n_paths, batch):
-        end = min(i+batch, n_paths)
-        tasks = [
-            delayed(simulate_single_path)(
-                T, n_steps, initial_value, dt,
-                directional_bias, variance_adjustment,
-                xp, apply_stochastic_controls
-            )
-            for _ in range(i, end)
-        ]
-        batch_res = compute(*tasks)
-        for j, p in enumerate(batch_res):
-            paths[i+j] = p.get() if use_gpu else p
+    # if zero paths, short‐circuit
+    if n_paths == 0:
+        return tg, xp.empty((0, n_steps + 1))
 
-        if end % save_int == 0 or end==n_paths:
-            paths.flush()
-            logging.info(f"Flushed up to {end}/{n_paths}")
+    # build chunks of up to `batch` paths
+    pieces = []
+    for start in range(0, n_paths, batch):
+        size = min(batch, n_paths - start)
+        chunk = simulate_batch(
+            T, n_steps, size,
+            xp,
+            dir_bias=directional_bias,
+            var_adj=variance_adjustment,
+        )
+        pieces.append(chunk)
 
+    # stitch back together & shift by initial_value
+    paths = xp.concatenate(pieces, axis=0) + initial_value
     return tg, paths

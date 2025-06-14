@@ -33,7 +33,6 @@ def adjust_variance(base_variance, adjustment_factor=1.0):
     _log(f"Adjusted variance {base_variance}→{adj} (factor={adjustment_factor})")
     return adj
 
-@lru_cache(maxsize=128)
 def adaptive_randomness_control(brownian_increment, feedback_value, target_range=(0.2, 1.0)):
     if feedback_value >= FEEDBACK_WARNING_THRESHOLD:
         logging.warning(f"High feedback: {feedback_value}")
