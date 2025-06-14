@@ -111,6 +111,11 @@ def brownian_motion_paths(
         but still use a single cumsum per chunk
       – on CPU (NumPy) same pattern
     """
+
+    if T <= 0:
+        raise ValueError("Time duration T must be greater than 0.")
+    if n_steps <= 0:
+        raise ValueError("Number of steps n_steps must be greater than 0.")
     xp = _xp
     dt = T / n_steps
 
