@@ -195,3 +195,46 @@ def brownian_motion_paths_gpu_stream(
     # 4) return the host copies
     return tg, host_paths
 
+def brownian_motion_paths_cpu_stream(
+    T: float,
+    n_steps: int,
+    n_paths: int,
+    batch: int,
+    filename: str = "cpu_paths.dat"
+):
+    """
+    Generate Brownian paths in NumPy but stream them to disk in `batch`-sized chunks
+    so you never have the full (n_paths x (n_steps+1)) array in RAM.
+    """
+    import numpy as np
+    dt = T / n_steps
+    # time‐grid in memory (tiny)
+    tg = np.linspace(0.0, T, n_steps + 1)
+
+    # open a float32 memmap on disk for the full result
+    mm = np.memmap(
+        filename,
+        mode="w+",
+        dtype=np.float32,
+        shape=(n_paths, n_steps + 1),
+    )
+
+    # generate chunk-by-chunk
+    for start in range(0, n_paths, batch):
+        size = min(batch, n_paths - start)
+        # simulate_batch is your existing function, just pass xp=np
+        paths = simulate_batch(
+            T,                 # total time
+            n_steps,           # steps per path
+            size,              # batch size
+            np,                # numpy backend
+            dir_bias=0.0,      # if you have a bias
+            var_adj=None       # or a variance adjuster
+        )
+        # write it directly into the memmap (only these rows in RAM at once)
+        mm[start : start + size, :] = paths
+
+    # flush to disk and return
+    mm.flush()
+    return tg, mm
+
