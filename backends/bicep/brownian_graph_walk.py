@@ -1,30 +1,61 @@
 import networkx as nx
-import numpy as np
-try:
-    import cupy as cp
-    _xp = cp
-    cp.cuda.runtime.getDeviceCount()  # probe driver
-except Exception:
-    _xp = np
-
+import numpy as _np
+from .brownian_motion import simulate_single_path
 from .stochastic_control import apply_stochastic_controls
 
-def brownian_graph_walk(n_nodes, n_steps):
+def brownian_graph_walk(n_nodes, n_steps,
+                        initial_state="00",
+                        T=1.0,
+                        directional_bias=0.0,
+                        variance_adjustment=None):
     """
-    Minimal implementation used only by tests.  
-    Generates an nx.Graph on which nodes are 0…n_nodes-1,  
-    paths is an (n_nodes, n_steps) array of increments + cumsum.
+    Builds a simple 2-bit state‐graph and walks it using hybrid
+    transitions driven by a Brownian path.
     """
-    G = nx.Graph()
-    G.add_nodes_from(range(n_nodes))
+    # 1) build 4-state graph
+    G = nx.DiGraph()
+    for s in ["00","01","10","11"]:
+        G.add_node(s)
+    edges = {
+      ("00","01"):1.0,
+      ("00","10"):1.0,
+      ("01","11"):0.5,
+      ("10","11"):0.5,
+      ("11","00"):0.2
+    }
+    for (u,v),w in edges.items():
+        G.add_edge(u,v,weight=w)
 
-    inc = _xp.random.normal(0, 1, size=(n_nodes, n_steps))
-    inc = apply_stochastic_controls(inc, None, None)  # broadcast-safe
-    paths = _xp.cumsum(inc, axis=1)
+    # 2) generate a single Brownian path
+    dt = T/n_steps
+    path = simulate_single_path(
+        T, n_steps, 0, dt,
+        directional_bias, variance_adjustment,
+        _np, apply_stochastic_controls
+    )
 
-    # add a simple chain of edges with weights = final-distance
-    for i in range(n_nodes-1):
-        w = float(_xp.linalg.norm(paths[i,-1] - paths[i+1,-1]))
-        G.add_edge(i, i+1, weight=w)
+    # 3) walk
+    cur = initial_state
+    history = [cur]
+    import random
+    for i in range(n_steps):
+        delta = path[i+1] - path[i]
+        nbrs = list(G.neighbors(cur))
+        if not nbrs:
+            break
+        # weighted choice
+        ws = [G[cur][v]["weight"]*(1+delta) for v in nbrs]
+        tot = sum(ws)
+        probs = [w/tot for w in ws]
+        cur = random.choices(nbrs, probs)[0]
+        history.append(cur)
 
-    return G, paths
+    # 4) update weights
+    counts = {s:history.count(s) for s in G.nodes()}
+    for u in G.nodes():
+        tot = sum(counts[v] for v in G.neighbors(u))
+        for v in G.neighbors(u):
+            if tot>0:
+                G[u][v]["weight"] = counts[v]/tot
+
+    return G, history
