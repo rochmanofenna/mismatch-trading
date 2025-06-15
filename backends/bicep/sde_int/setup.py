@@ -1,20 +1,12 @@
-# backends/bicep/sde_int/setup.py
-from setuptools import setup
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-import os
+from torch.utils.cpp_extension import load
 
-cuda_home = os.environ.get("CUDA_HOME", "/usr/local/cuda")
-
-setup(
-    name="sde_int",
-    ext_modules=[
-        CUDAExtension(
-            name="sde_int",
-            sources=["curand_kernel.cu", "binding.cpp"],
-            include_dirs=[os.path.join(cuda_home, "include")],
-            libraries=["curand"],
-            extra_compile_args={"nvcc": ["-O3"]},
-        )
+sde_ext = load(
+    name="sde_ext",
+    sources=[
+      "backends/bicep/sde_int/curand_kernel.cu",
+      "backends/bicep/sde_int/binding.cpp",
     ],
-    cmdclass={"build_ext": BuildExtension},
+    extra_cuda_cflags=["-O3","-I/usr/local/cuda/include"],
+    extra_ldflags=["-lcurand"],
+    verbose=True,
 )
